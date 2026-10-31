@@ -1,7 +1,7 @@
 # WhatsApp Sticker Bot
 
-**Versión:** 1.0.0  
-**Estado:** Planificación  
+**Versión:** 1.1.0  
+**Estado:** Validaciones y robustez  
 **Tipo de proyecto:** Bot de automatización para WhatsApp  
 **Lenguaje principal:** JavaScript
 
