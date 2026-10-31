@@ -1,0 +1,27 @@
+# Dependencias
+node_modules/
+
+# Variables de entorno
+.env
+.env.*
+!.env.example
+
+# Sesiones y autenticación
+sessions/
+
+# Archivos temporales
+media/temp/
+
+# Registros
+*.log
+logs/
+
+# Pruebas y cobertura
+coverage/
+
+# Archivos del sistema
+.DS_Store
+Thumbs.db
+
+# Archivos de VS Code
+.vscode/
