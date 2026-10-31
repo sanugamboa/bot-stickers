@@ -10,6 +10,23 @@ export async function procesarImagen(archivo) {
   // Obtenemos los metadatos de la imagen original.
 const metadatosOriginales = await sharp(archivo).metadata();
 
+//aqui comprobamos que la imagen tenga dimensiones validas
+if (!metadatosOriginales.width || !metadatosOriginales.height) {
+  throw new Error('La imagen no tine dimenciones validas');
+}
+
+//aqui comprobamos que el formato de la imagen sea valido
+const formatosPermiditidos = ['jpeg', 'png', 'webp'];
+
+if (!formatosPermiditidos.includes(metadatosOriginales.format)) {
+  throw new Error('La imagen tien un formato no valido');
+}
+
+  // Comprobar que Sharp pueda leer los datos de la imagen
+  await sharp(archivo, {
+    failOn: 'error'
+  }).stats();
+
 console.log('Dimensiones originales:',
     metadatosOriginales.width,
     'x',

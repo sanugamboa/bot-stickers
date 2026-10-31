@@ -16,6 +16,48 @@ import { procesarImagen } from "../services/imageProcessor.js";
 //importacion del modulo que envia los stickers
 import { enviarSticker } from "../services/stickerSender.js";
 
+//aqui se define el tamaño de mb permitido de las imagenes
+const TAMANO_MAXIMO = 10 * 1024 * 1024;
+
+//aqui se registra los mensaje que estan en medio del proceso o ya fueron procesadas
+const mensajesProcesados = new Set();
+
+//aqui configuramos el limite de las solicitudes por usuario
+const MAX_IMAGENES = 10;
+const VENTANA_TIEMPO = 60 * 1000;
+
+//aqui se registra en numero de solicitudes de cada usuario
+const solicitudesUsuarios = new Map();
+
+//funcion que verifica el limite de solicitudes de los usuarios
+function verificarLimite(usuario) {
+  const ahora = Date.now();
+
+  //consulta el registro de los usuarios
+  const registro = solicitudesUsuarios.get(usuario);
+
+  console.log('Solicitudes recibidas antes de verificar:', registro?.cantidad || 0);
+
+  //si no existe un registro o ya pasaron 60 segundos
+  if (!registro || ahora - registro.inicio >= VENTANA_TIEMPO) {
+    solicitudesUsuarios.set(usuario, {
+      inicio: ahora,
+      cantidad: 1
+    });
+    return true;
+  }
+
+  //si ya alcanzo el maximo permitido
+  if (registro.cantidad >= MAX_IMAGENES) {
+    return false;
+  }
+
+  //registramos una nueva solicitud
+  registro.cantidad++;
+
+  return true;
+}
+
 //Esta es la funcion que se encarga de escuchar y procesar los mensajes
 export async function manejarMensaje(sock, logger) {
 
@@ -39,6 +81,24 @@ export async function manejarMensaje(sock, logger) {
         //se ignoran los mensajes de estado de whatsapp
         if (mensaje.key.remoteJid === 'status@broadcast') continue;
 
+        //aqui se obtiene el identificador unico del mensaje
+        const idMensaje = mensaje.key.id;
+
+        //aqui se comprueba si el mensaje ya fue procesado
+        if (mensajesProcesados.has(idMensaje)) {
+          console.log('mensaje duplicado ignorado: ', idMensaje);
+          continue;
+        }
+
+        // Registrar el mensaje para evitar procesarlo nuevamente
+        mensajesProcesados.add(idMensaje);
+
+        //con esta funcion mantenemos al bot en un minimo de 1000 identificadores
+        if (mensajesProcesados.size > 1000) {
+          const primerId = mensajesProcesados.values().next().value;
+          mensajesProcesados.delete(primerId);
+        }
+
         //aqui se obtiene el contenido de la imagen
         const contenido = normalizeMessageContent(mensaje.message);
 
@@ -48,6 +108,28 @@ export async function manejarMensaje(sock, logger) {
         //esta funcion ignora el mensaje si no contiene una imagen
         if (!imagen) {
           console.log('mensaje ignorado: no contiene una imagen');
+          continue;
+        }
+
+        //identificamos al usuario que envio la imagen
+        const usuario = mensaje.key.participant || mensaje.key.remoteJid;
+
+        console.log('Usuario identificado:', usuario);
+        console.log('Registro actual:', solicitudesUsuarios.get(usuario));
+
+        //Verficamos el limite de solicitudes
+        if (!verificarLimite(usuario)) {
+          console.log('Limite de imagenes alcanzado para: ', usuario);
+          console.log(
+              'Solicitudes recibidas:',
+              solicitudesUsuarios.get(usuario)?.cantidad
+          );
+          continue;
+        }
+
+        //aqui se comprueba el tamaño de la imagen que nos informa whatsapp
+        if (imagen.fileLength && Number(imagen.fileLength) > TAMANO_MAXIMO) {
+          console.log('imagen rechazada, excede las 10 mb');
           continue;
         }
 
@@ -79,6 +161,12 @@ export async function manejarMensaje(sock, logger) {
             reuploadRequest: sock.updateMediaMessage
           }
         );
+
+        //aqui se comprueba el tamaño real de las imagenes
+        if (archivo.length > TAMANO_MAXIMO) {
+          console.log('archivo rechazado, supera las 10mb');
+          continue;
+        }
 
         //aqui enviamos la imagen al modulo de procesamiento
         const resultado = await procesarImagen(archivo);
