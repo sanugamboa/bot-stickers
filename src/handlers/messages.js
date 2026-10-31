@@ -2,7 +2,7 @@
 import { downloadMediaMessage, normalizeMessageContent } from "@whiskeysockets/baileys";
 
 //importacion de las herramientas para trabajr con los archivos
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, writeFile, rm } from 'node:fs/promises';
 
 //Importacion de la herramientas que manejan las rutas 
 import path from 'node:path';
@@ -12,6 +12,9 @@ import { randomUUID } from "node:crypto";
 
 //importacion del modulo que procesa las imagenes
 import { procesarImagen } from "../services/imageProcessor.js";
+
+//importacion del modulo que envia los stickers
+import { enviarSticker } from "../services/stickerSender.js";
 
 //Esta es la funcion que se encarga de escuchar y procesar los mensajes
 export async function manejarMensaje(sock, logger) {
@@ -24,6 +27,9 @@ export async function manejarMensaje(sock, logger) {
 
     //esta funcion recorre todos los mensajes recibidos en el evento
     for (const mensaje of messages) {
+
+      //variable que almacena la ruta temporal
+      let rutaArchivo;
 
       try {
 
@@ -87,22 +93,37 @@ export async function manejarMensaje(sock, logger) {
         await mkdir(carpeta, { recursive: true });
 
         //aqui se construye la ruta del archivo
-        const rutaArchivo = path.join(carpeta, nombreArchivo);
+        rutaArchivo = path.join(carpeta, nombreArchivo);
 
         //con esta funcion se guarda el archivo en el disco
         await writeFile(rutaArchivo, resultado.buffer);
 
-        //con esto se muestran los resultados
-        console.log('imagen procesada y guardada correctamente');
-        console.log('Archivo: ', rutaArchivo);
-        console.log('Formato: ', resultado.formato);
-        console.log('Dimensiones: ', `${resultado.dimensiones}x${resultado.dimensiones}`);
-        console.log('Peso: ', `${(resultado.peso / 1024).toFixed(2)}KB`);
-        console.log('Calidad: ', resultado.calidad);
+        console.log('Sticker preparado correctamente');
+
+        //aqui se envia el sticker
+        await enviarSticker(
+          sock,
+          mensaje.key.remoteJid,
+          rutaArchivo
+        );
 
       } catch (error) {
         //esta funcion captura errores durante el proceso
         console.error('error al procesar el mensaje: ', error);
+      } finally {
+
+        //esta funcion elimina el archivo temporal 
+        if (rutaArchivo) {
+
+          try {
+
+            await rm(rutaArchivo, { force: true });
+
+            console.log('archivo eliminado correctamente');
+          } catch (error) {
+            console.log('error al eliminiar archivo: ', error);
+          }
+        }
       }
     }
   });
