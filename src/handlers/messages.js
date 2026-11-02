@@ -16,46 +16,54 @@ import { procesarImagen } from "../services/imageProcessor.js";
 //importacion del modulo que envia los stickers
 import { enviarSticker } from "../services/stickerSender.js";
 
+//importacion del modulo que controla las solicitudes
+import { verificarLimite } from "../services/rateLimiter.js";
+
 //aqui se define el tamaño de mb permitido de las imagenes
 const TAMANO_MAXIMO = 10 * 1024 * 1024;
 
-//aqui se registra los mensaje que estan en medio del proceso o ya fueron procesadas
+//aqui se registran los mensajes que estan en medio del proceso o ya fueron procesados
 const mensajesProcesados = new Set();
+const mensajesEnProceso = new Set();
 
-//aqui configuramos el limite de las solicitudes por usuario
-const MAX_IMAGENES = 10;
-const VENTANA_TIEMPO = 60 * 1000;
+//aqui se define el numero de procesos simultaneos
+const MAX_PROCESOS_SIMULTANEOS = 3;
 
-//aqui se registra en numero de solicitudes de cada usuario
-const solicitudesUsuarios = new Map();
+//aqui se registran los procesos activos
+let procesosActivos = 0;
 
-//funcion que verifica el limite de solicitudes de los usuarios
-function verificarLimite(usuario) {
-  const ahora = Date.now();
+//aqui se listan las imagenes pendientes
+const colaProcesamiento = [];
 
-  //consulta el registro de los usuarios
-  const registro = solicitudesUsuarios.get(usuario);
+//funcion para adquirir un proceso de almacenamiento
+async function adquirirTurno() {
 
-  console.log('Solicitudes recibidas antes de verificar:', registro?.cantidad || 0);
-
-  //si no existe un registro o ya pasaron 60 segundos
-  if (!registro || ahora - registro.inicio >= VENTANA_TIEMPO) {
-    solicitudesUsuarios.set(usuario, {
-      inicio: ahora,
-      cantidad: 1
-    });
-    return true;
+  //si hay espacio disponible lo ocupamos
+  if (procesosActivos < MAX_PROCESOS_SIMULTANEOS) {
+    procesosActivos++;
+    return;
   }
 
-  //si ya alcanzo el maximo permitido
-  if (registro.cantidad >= MAX_IMAGENES) {
-    return false;
+  //si no hay espacio, que espere en la cola
+  await new Promise(resolve => {
+    colaProcesamiento.push(resolve);
+  });
+}
+
+//funcion que libera un espacio de almacenamiento
+function liberarTurno() {
+
+  //aqui se comprueba si hay imagenes esperando
+  if (colaProcesamiento.length > 0) {
+
+    //aqui se da el espacio de almacenamiento a la siguiente imagen
+    const siguiente = colaProcesamiento.shift();
+    siguiente();
+  } else {
+
+    //si no hay imagenes esperando liberamos el espacio
+    procesosActivos--;
   }
-
-  //registramos una nueva solicitud
-  registro.cantidad++;
-
-  return true;
 }
 
 //Esta es la funcion que se encarga de escuchar y procesar los mensajes
@@ -73,6 +81,9 @@ export async function manejarMensaje(sock, logger) {
       //variable que almacena la ruta temporal
       let rutaArchivo;
 
+      let turnoAdquirido = false;
+      let idMensaje;
+
       try {
 
         //se ignoran los mensajes enviados por el propio bot
@@ -82,21 +93,12 @@ export async function manejarMensaje(sock, logger) {
         if (mensaje.key.remoteJid === 'status@broadcast') continue;
 
         //aqui se obtiene el identificador unico del mensaje
-        const idMensaje = mensaje.key.id;
+        idMensaje = mensaje.key.id;
 
-        //aqui se comprueba si el mensaje ya fue procesado
-        if (mensajesProcesados.has(idMensaje)) {
+        //aqui se comprueba si el mensaje ya fue procesado o esta en proceso
+        if (mensajesProcesados.has(idMensaje) || mensajesEnProceso.has(idMensaje)) {
           console.log('mensaje duplicado ignorado: ', idMensaje);
           continue;
-        }
-
-        // Registrar el mensaje para evitar procesarlo nuevamente
-        mensajesProcesados.add(idMensaje);
-
-        //con esta funcion mantenemos al bot en un minimo de 1000 identificadores
-        if (mensajesProcesados.size > 1000) {
-          const primerId = mensajesProcesados.values().next().value;
-          mensajesProcesados.delete(primerId);
         }
 
         //aqui se obtiene el contenido de la imagen
@@ -111,19 +113,17 @@ export async function manejarMensaje(sock, logger) {
           continue;
         }
 
+        //registramos el mensaje para evitar procesarlo simultaneamente
+        mensajesEnProceso.add(idMensaje);
+
         //identificamos al usuario que envio la imagen
         const usuario = mensaje.key.participant || mensaje.key.remoteJid;
 
         console.log('Usuario identificado:', usuario);
-        console.log('Registro actual:', solicitudesUsuarios.get(usuario));
 
-        //Verficamos el limite de solicitudes
+        //Verificamos el limite de solicitudes
         if (!verificarLimite(usuario)) {
           console.log('Limite de imagenes alcanzado para: ', usuario);
-          console.log(
-              'Solicitudes recibidas:',
-              solicitudesUsuarios.get(usuario)?.cantidad
-          );
           continue;
         }
 
@@ -148,6 +148,13 @@ export async function manejarMensaje(sock, logger) {
           console.log('formato no permitido: ', mimeType);
           continue;
         }
+
+        //aqui se solicita el turno para procesar la imagen
+        await adquirirTurno();
+        turnoAdquirido = true;
+
+        console.log('Procesos activos: ', procesosActivos);
+        console.log('imagenes en espera: ', colaProcesamiento.length);
 
         console.log('Imagen recibida existosamente');
 
@@ -174,7 +181,7 @@ export async function manejarMensaje(sock, logger) {
         //aqui se crean el nombre unico para el archivo
         const nombreArchivo = `${randomUUID()}.webp`;
 
-        //ruta donde se guradaran los mensajes
+        //ruta donde se guardaran los mensajes
         const carpeta = path.resolve('media/temp');
 
         //Se crea la carpeta si es que no existe
@@ -195,12 +202,27 @@ export async function manejarMensaje(sock, logger) {
           rutaArchivo
         );
 
+        //registramos el mensaje como procesado correctamente
+        mensajesProcesados.add(idMensaje);
+
+        //mantenemos un maximo de 1000 identificadores
+        if (mensajesProcesados.size > 1000) {
+          const primerId = mensajesProcesados.values().next().value;
+          mensajesProcesados.delete(primerId);
+        }
+
       } catch (error) {
         //esta funcion captura errores durante el proceso
         console.error('error al procesar el mensaje: ', error);
+
       } finally {
 
-        //esta funcion elimina el archivo temporal 
+        //eliminamos el mensaje del registro de procesos activos
+        if (idMensaje) {
+          mensajesEnProceso.delete(idMensaje);
+        }
+
+        //esta funcion elimina el archivo temporal
         if (rutaArchivo) {
 
           try {
@@ -211,6 +233,12 @@ export async function manejarMensaje(sock, logger) {
           } catch (error) {
             console.log('error al eliminiar archivo: ', error);
           }
+        }
+
+        //aqui se libera el turno de procesamiento
+        if (turnoAdquirido) {
+          liberarTurno();
+          console.log('Turno de procesamiento liberado');
         }
       }
     }
